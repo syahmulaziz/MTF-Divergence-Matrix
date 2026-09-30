@@ -1,0 +1,379 @@
+//@version=6
+indicator("MTF Divergence Matrix v1.1", shorttitle="Div Matrix", overlay=true, max_labels_count=300, max_lines_count=300)
+
+// ============================================================================
+// INPUT GROUPS
+// ============================================================================
+string GRP_TF      = "① Timeframes"
+string GRP_ENGINE  = "② Divergence Engine"
+string GRP_TYPES   = "③ Divergence Types"
+string GRP_SIGNAL  = "④ Confluence"
+string GRP_DISPLAY = "⑤ Display"
+
+// ============================================================================
+// TIMEFRAMES
+// ============================================================================
+string tf1 = input.timeframe("5",   "Timeframe 1", group=GRP_TF)
+string tf2 = input.timeframe("30",  "Timeframe 2", group=GRP_TF)
+string tf3 = input.timeframe("240", "Timeframe 3", group=GRP_TF)
+
+// ============================================================================
+// DIVERGENCE ENGINE
+// ============================================================================
+float src = input.source(close, "RSI Source", group=GRP_ENGINE)
+
+int rsiLength = input.int(14, "RSI Length", minval=2, group=GRP_ENGINE)
+int pivotLeft = input.int(5, "Pivot Left Bars", minval=1, group=GRP_ENGINE)
+int pivotRight = input.int(5, "Pivot Right Bars", minval=1, group=GRP_ENGINE)
+
+int minPivotDistance = input.int(5,  "Minimum Bars Between Pivots", minval=1, group=GRP_ENGINE)
+int maxPivotDistance = input.int(60, "Maximum Bars Between Pivots", minval=5, group=GRP_ENGINE)
+
+// ============================================================================
+// DIVERGENCE TYPES
+// ============================================================================
+bool detectRegular = input.bool(true, "Regular Divergence", group=GRP_TYPES)
+bool detectHidden  = input.bool(true, "Hidden Divergence", group=GRP_TYPES)
+
+// ============================================================================
+// CONFLUENCE
+// ============================================================================
+int signalHoldBars = input.int(
+     3,
+     "Signal Active For X TF Bars",
+     minval=1,
+     maxval=20,
+     tooltip="Keeps a confirmed divergence active for several bars of its own timeframe so overlap across TFs is easier to detect.",
+     group=GRP_SIGNAL
+)
+
+int minConfluence = input.int(2, "Minimum TFs For Confluence", minval=1, maxval=3, group=GRP_SIGNAL)
+
+// ============================================================================
+// DISPLAY
+// ============================================================================
+bool showTable = input.bool(true, "Show Divergence Matrix", group=GRP_DISPLAY)
+bool showDivergenceLines = input.bool(true, "Draw Divergence Lines", group=GRP_DISPLAY)
+bool showLineText = input.bool(true, "Show Text On Divergence Line", group=GRP_DISPLAY)
+bool showConfluenceBackground = input.bool(true, "Highlight Confluence", group=GRP_DISPLAY)
+
+// ============================================================================
+// CORE DIVERGENCE FUNCTION
+//
+// Event codes:
+//  2 = Regular Bullish
+//  1 = Hidden Bullish
+//  0 = None
+// -1 = Hidden Bearish
+// -2 = Regular Bearish
+//
+// Returns:
+// [eventCode, x1, y1, x2, y2]
+// where x1/y1 = previous pivot, x2/y2 = current pivot
+// ============================================================================
+f_divergence_event_data() =>
+    float oscillator = ta.rsi(src, rsiLength)
+
+    float pivotLow  = ta.pivotlow(low, pivotLeft, pivotRight)
+    float pivotHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+
+    bool lowFound  = not na(pivotLow)
+    bool highFound = not na(pivotHigh)
+
+    // ----- LOW PIVOTS -----
+    float currentPriceLow = low[pivotRight]
+    float currentOscLow   = oscillator[pivotRight]
+    int   currentLowBar   = bar_index[pivotRight]
+    int   currentLowTime  = time[pivotRight]
+
+    float previousPriceLow = ta.valuewhen(lowFound, low[pivotRight], 1)
+    float previousOscLow   = ta.valuewhen(lowFound, oscillator[pivotRight], 1)
+    int   previousLowBar   = ta.valuewhen(lowFound, bar_index[pivotRight], 1)
+    int   previousLowTime  = ta.valuewhen(lowFound, time[pivotRight], 1)
+
+    int lowDistance = na(previousLowBar) ? 0 : currentLowBar - previousLowBar
+    bool validLowDistance =
+         lowFound and
+         not na(previousLowBar) and
+         lowDistance >= minPivotDistance and
+         lowDistance <= maxPivotDistance
+
+    // ----- HIGH PIVOTS -----
+    float currentPriceHigh = high[pivotRight]
+    float currentOscHigh   = oscillator[pivotRight]
+    int   currentHighBar   = bar_index[pivotRight]
+    int   currentHighTime  = time[pivotRight]
+
+    float previousPriceHigh = ta.valuewhen(highFound, high[pivotRight], 1)
+    float previousOscHigh   = ta.valuewhen(highFound, oscillator[pivotRight], 1)
+    int   previousHighBar   = ta.valuewhen(highFound, bar_index[pivotRight], 1)
+    int   previousHighTime  = ta.valuewhen(highFound, time[pivotRight], 1)
+
+    int highDistance = na(previousHighBar) ? 0 : currentHighBar - previousHighBar
+    bool validHighDistance =
+         highFound and
+         not na(previousHighBar) and
+         highDistance >= minPivotDistance and
+         highDistance <= maxPivotDistance
+
+    // ----- DIVERGENCE CONDITIONS -----
+    bool regularBullish =
+         detectRegular and
+         validLowDistance and
+         currentPriceLow < previousPriceLow and
+         currentOscLow > previousOscLow
+
+    bool hiddenBullish =
+         detectHidden and
+         validLowDistance and
+         currentPriceLow > previousPriceLow and
+         currentOscLow < previousOscLow
+
+    bool regularBearish =
+         detectRegular and
+         validHighDistance and
+         currentPriceHigh > previousPriceHigh and
+         currentOscHigh < previousOscHigh
+
+    bool hiddenBearish =
+         detectHidden and
+         validHighDistance and
+         currentPriceHigh < previousPriceHigh and
+         currentOscHigh > previousOscHigh
+
+    int eventCode = 0
+    int x1 = na
+    int x2 = na
+    float y1 = na
+    float y2 = na
+
+    if regularBullish
+        eventCode := 2
+        x1 := previousLowTime
+        y1 := previousPriceLow
+        x2 := currentLowTime
+        y2 := currentPriceLow
+    else if hiddenBullish
+        eventCode := 1
+        x1 := previousLowTime
+        y1 := previousPriceLow
+        x2 := currentLowTime
+        y2 := currentPriceLow
+    else if regularBearish
+        eventCode := -2
+        x1 := previousHighTime
+        y1 := previousPriceHigh
+        x2 := currentHighTime
+        y2 := currentPriceHigh
+    else if hiddenBearish
+        eventCode := -1
+        x1 := previousHighTime
+        y1 := previousPriceHigh
+        x2 := currentHighTime
+        y2 := currentPriceHigh
+
+    [eventCode, x1, y1, x2, y2]
+
+// ============================================================================
+// ACTIVE STATE FUNCTION
+// ============================================================================
+f_divergence_state() =>
+    [eventCode, _, _, _, _] = f_divergence_event_data()
+
+    int barsSinceEvent = ta.barssince(eventCode != 0)
+    int latestEvent = ta.valuewhen(eventCode != 0, eventCode, 0)
+
+    int state = 0
+    if not na(barsSinceEvent) and barsSinceEvent <= signalHoldBars
+        state := latestEvent
+
+    state
+
+// ============================================================================
+// MULTI-TIMEFRAME STATES
+// ============================================================================
+int state1 = request.security(syminfo.tickerid, tf1, f_divergence_state(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+int state2 = request.security(syminfo.tickerid, tf2, f_divergence_state(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+int state3 = request.security(syminfo.tickerid, tf3, f_divergence_state(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// ============================================================================
+// MTF DRAW DATA
+// Using gaps_on so a new HTF event is not repeated on every lower TF candle
+// ============================================================================
+[event1, x1_1, y1_1, x2_1, y2_1] = request.security(syminfo.tickerid, tf1, f_divergence_event_data(), gaps=barmerge.gaps_on, lookahead=barmerge.lookahead_off)
+[event2, x1_2, y1_2, x2_2, y2_2] = request.security(syminfo.tickerid, tf2, f_divergence_event_data(), gaps=barmerge.gaps_on, lookahead=barmerge.lookahead_off)
+[event3, x1_3, y1_3, x2_3, y2_3] = request.security(syminfo.tickerid, tf3, f_divergence_event_data(), gaps=barmerge.gaps_on, lookahead=barmerge.lookahead_off)
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+f_direction(int signal) =>
+    string result = "—"
+    if signal > 0
+        result := "▲ BULLISH"
+    else if signal < 0
+        result := "▼ BEARISH"
+    result
+
+f_type(int signal) =>
+    string result = "—"
+    if math.abs(signal) == 2
+        result := "Regular"
+    else if math.abs(signal) == 1
+        result := "Hidden"
+    result
+
+f_signal_color(int signal) =>
+    color result = color.new(color.gray, 85)
+    if signal > 0
+        result := color.new(color.lime, 75)
+    else if signal < 0
+        result := color.new(color.red, 75)
+    result
+
+f_line_color(int signal) =>
+    signal > 0 ? color.lime : color.red
+
+f_line_style(int signal) =>
+    math.abs(signal) == 2 ? line.style_solid : line.style_dashed
+
+f_event_text(int eventCode) =>
+    string result = ""
+    if eventCode == 2
+        result := "Reg Bull Div"
+    else if eventCode == 1
+        result := "Hidden Bull Div"
+    else if eventCode == -2
+        result := "Reg Bear Div"
+    else if eventCode == -1
+        result := "Hidden Bear Div"
+    result
+
+// ============================================================================
+// DRAW DIVERGENCE LINE + TEXT
+// ============================================================================
+f_draw_divergence(int eventCode, int x1, float y1, int x2, float y2, string tf) =>
+    if showDivergenceLines and not na(eventCode) and eventCode != 0 and not na(x1) and not na(x2) and not na(y1) and not na(y2)
+
+        color lcol = f_line_color(eventCode)
+
+        line.new(
+             x1=x1,
+             y1=y1,
+             x2=x2,
+             y2=y2,
+             xloc=xloc.bar_time,
+             extend=extend.none,
+             color=lcol,
+             width=2,
+             style=f_line_style(eventCode)
+        )
+
+        if showLineText
+            int midX = int(math.round((x1 + x2) / 2))
+            float midY = (y1 + y2) / 2.0
+
+            label.new(
+                 x=midX,
+                 y=midY,
+                 xloc=xloc.bar_time,
+                 text=tf + " " + f_event_text(eventCode),
+                 style=label.style_none,
+                 textcolor=lcol,
+                 size=size.tiny
+            )
+
+// Draw lines
+f_draw_divergence(event1, x1_1, y1_1, x2_1, y2_1, tf1)
+f_draw_divergence(event2, x1_2, y1_2, x2_2, y2_2, tf2)
+f_draw_divergence(event3, x1_3, y1_3, x2_3, y2_3, tf3)
+
+// ============================================================================
+// CONFLUENCE ENGINE
+// ============================================================================
+int bullishCount =
+     (state1 > 0 ? 1 : 0) +
+     (state2 > 0 ? 1 : 0) +
+     (state3 > 0 ? 1 : 0)
+
+int bearishCount =
+     (state1 < 0 ? 1 : 0) +
+     (state2 < 0 ? 1 : 0) +
+     (state3 < 0 ? 1 : 0)
+
+bool bullishConfluence =
+     bullishCount >= minConfluence and
+     bullishCount > bearishCount
+
+bool bearishConfluence =
+     bearishCount >= minConfluence and
+     bearishCount > bullishCount
+
+// ============================================================================
+// CONFLUENCE BACKGROUND
+// ============================================================================
+color confluenceBg = na
+
+if showConfluenceBackground
+    if bullishConfluence
+        confluenceBg := color.new(color.lime, 90)
+    else if bearishConfluence
+        confluenceBg := color.new(color.red, 90)
+
+bgcolor(confluenceBg)
+
+// ============================================================================
+// DIVERGENCE MATRIX TABLE
+// ============================================================================
+var table divergenceTable = table.new(position.top_right, 3, 5, border_width=1)
+
+if barstate.islast
+    if showTable
+        // Header
+        table.cell(divergenceTable, 0, 0, "TF",         bgcolor=color.new(color.gray, 30), text_color=color.white)
+        table.cell(divergenceTable, 1, 0, "DIVERGENCE", bgcolor=color.new(color.gray, 30), text_color=color.white)
+        table.cell(divergenceTable, 2, 0, "TYPE",       bgcolor=color.new(color.gray, 30), text_color=color.white)
+
+        // TF1
+        table.cell(divergenceTable, 0, 1, tf1, bgcolor=color.new(color.black, 10), text_color=color.white)
+        table.cell(divergenceTable, 1, 1, f_direction(state1), bgcolor=f_signal_color(state1), text_color=color.white)
+        table.cell(divergenceTable, 2, 1, f_type(state1),      bgcolor=f_signal_color(state1), text_color=color.white)
+
+        // TF2
+        table.cell(divergenceTable, 0, 2, tf2, bgcolor=color.new(color.black, 10), text_color=color.white)
+        table.cell(divergenceTable, 1, 2, f_direction(state2), bgcolor=f_signal_color(state2), text_color=color.white)
+        table.cell(divergenceTable, 2, 2, f_type(state2),      bgcolor=f_signal_color(state2), text_color=color.white)
+
+        // TF3
+        table.cell(divergenceTable, 0, 3, tf3, bgcolor=color.new(color.black, 10), text_color=color.white)
+        table.cell(divergenceTable, 1, 3, f_direction(state3), bgcolor=f_signal_color(state3), text_color=color.white)
+        table.cell(divergenceTable, 2, 3, f_type(state3),      bgcolor=f_signal_color(state3), text_color=color.white)
+
+        // Confluence row
+        string confluenceText = "NONE"
+        string confluenceCount = "0 / 3"
+        color confluenceColor = color.new(color.gray, 70)
+
+        if bullishConfluence
+            confluenceText := "▲ BULLISH"
+            confluenceCount := str.tostring(bullishCount) + " / 3"
+            confluenceColor := color.new(color.lime, 55)
+        else if bearishConfluence
+            confluenceText := "▼ BEARISH"
+            confluenceCount := str.tostring(bearishCount) + " / 3"
+            confluenceColor := color.new(color.red, 55)
+
+        table.cell(divergenceTable, 0, 4, "CONFLUENCE", bgcolor=confluenceColor, text_color=color.white)
+        table.cell(divergenceTable, 1, 4, confluenceText, bgcolor=confluenceColor, text_color=color.white)
+        table.cell(divergenceTable, 2, 4, confluenceCount, bgcolor=confluenceColor, text_color=color.white)
+    else
+        table.clear(divergenceTable, 0, 0, 2, 4)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+bool newBullishConfluence = bullishConfluence and not bullishConfluence[1]
+bool newBearishConfluence = bearishConfluence and not bearishConfluence[1]
+
+alertcondition(newBullishConfluence, title="MTF Bullish Divergence Confluence", message="MTF Divergence Matrix: Bullish divergence confluence detected.")
+alertcondition(newBearishConfluence, title="MTF Bearish Divergence Confluence", message="MTF Divergence Matrix: Bearish divergence confluence detected.")
